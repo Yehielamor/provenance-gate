@@ -50,17 +50,19 @@ NET_CMD = re.compile(r"(?:^|[\s;&|(`])(curl|wget|http|httpie|nc|ncat|ssh|scp|rsy
                      r"aws\s+s3|gsutil|mail|sendmail)\b")
 URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+|(?<![\w@.])(?:www\.)[a-z0-9.-]+\.[a-z]{2,}[^\s'\"<>)\]]*", re.I)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# bare host:port and IP addresses (localhost:3000, 10.0.0.5, root@164.90.1.2)
+ADDR_RE = re.compile(r"(?<![\w.-])(?:localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:/[^\s'\"<>)]*)?")
 HOST_RE = re.compile(r"(?<![\w.-])(?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|ai|app|co|xyz|site|info|me|sh|cloud|"
                      r"ru|cn|top|link|click)(?![\w-])", re.I)
 
 
 # --- secrets (the flow rule) ------------------------------------------------------
 
-SENSITIVE_PATH = re.compile(r"(^|/)(\.env(\.[\w.-]+)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|"
+SENSITIVE_PATH = re.compile(r"(^|/)(\.env(?!\.(?:example|sample|template|dist|defaults)\b)(\.[\w.-]+)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|"
                             r"id_(rsa|ed25519|ecdsa|dsa)[^/]*|[^/]*\.(pem|key|p12|pfx|jks|keystore)|"
                             r"credentials(\.json)?|secrets?(\.\w+)?|service[-_]account[^/]*\.json|kubeconfig)$|"
                             r"(^|/)\.(ssh|aws|gnupg|kube|docker)/", re.I)
-SECRET_CMD = re.compile(r"(^|[\s;&|(])(printenv|env|set|security\s+find-\w+-password|gh\s+auth\s+token|"
+SECRET_CMD = re.compile(r"(^|[\s;&|(])(printenv|env\s*($|[|;&>])|set\s*($|[|;&>])|security\s+find-\w+-password|gh\s+auth\s+token|"
                         r"aws\s+configure\s+get|gcloud\s+auth\s+print-\w+-token|op\s+read|vault\s+(kv\s+)?get)\b")
 SECRET_VALUE = re.compile(
     r"(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{30,}|xox[abposr]-[\w-]{10,}|"
@@ -70,6 +72,38 @@ SECRET_VALUE = re.compile(
 ASSIGN = re.compile(r"""(?im)^\s*(?:export\s+)?[\w.-]*(?:key|token|secret|pass(?:word)?|pwd|auth|credential)[\w.-]*\s*[:=]\s*["']?([^\s"'#]{8,})""")
 TOKEN = re.compile(r"[A-Za-z0-9_\-+/=.]{8,}")
 EXTERNAL_TOOLS = ("WebFetch", "WebSearch")
+READ_CMD = re.compile(r"(^|[\s;&|(])(cat|less|more|head|tail|grep|rg|awk|sed|jq|yq|bat|strings|xxd|base64|source|\.)\s")
+# Tools that return content someone else wrote. MCP tools count when they read (get/list/search/...),
+# except servers that only report local app state.
+LOCAL_MCP = re.compile(r"^mcp__(ccd_[a-z_]+|scheduled-tasks|terminal|visualize|mcp-registry)__")
+
+
+def brings_external(tool: str, cmd: str) -> bool:
+    if tool in EXTERNAL_TOOLS:
+        return True
+    if tool.startswith("mcp__"):
+        op = tool.split("__", 2)[-1].lower()
+        return not LOCAL_MCP.match(tool) and (op.startswith(READ_VERBS) or "page" in op or "navigate" in op)
+    if tool == "Bash":  # the output of a web request to somewhere else, not of ssh or a local server
+        if not re.search(r"(^|[\s;&|(])(curl|wget|http|httpie)\b", cmd):
+            return False
+        urls = URL_RE.findall(cmd) + HOST_RE.findall(cmd) + ADDR_RE.findall(cmd)
+        return not urls or any(not LOCAL_DEST.match(u) for u in urls)
+    return False
+
+
+def reads_sensitive(tool: str, args: dict, cmd: str) -> str:
+    path = str(args.get("file_path") or args.get("path") or "")
+    if tool in ("Read", "Grep") and SENSITIVE_PATH.search(path):
+        return path
+    if tool == "Bash":
+        if SECRET_CMD.search(cmd):
+            return cmd[:60]
+        if READ_CMD.search(cmd):
+            for w in re.split(r"[\s;&|<>()'\"]+", cmd):
+                if SENSITIVE_PATH.search(w):
+                    return w
+    return ""
 
 
 def _strings(x) -> str:
@@ -114,6 +148,12 @@ def carries_secret(st: dict, args: dict) -> bool:
         _fp(m.group(0)) in fps for m in SECRET_VALUE.finditer(blob))
 
 
+# Destinations on this machine or the local network: nothing leaves the machine.
+LOCAL_DEST = re.compile(r"^(?:[a-z+]+://)?(?:[^@/\s]+@)?(localhost|127(?:\.\d+){3}|0\.0\.0\.0|\[?::1\]?|"
+                        r"10(?:\.\d+){3}|192\.168(?:\.\d+){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){2}|[\w-]+\.(?:local|localhost|test|internal))"
+                        r"(?=[:/?#]|$)|^file://", re.I)
+
+
 def gated(tool: str, args: dict) -> bool:
     if tool in ("WebFetch",):
         return True
@@ -132,7 +172,7 @@ def control_values(tool: str, args: dict) -> list[tuple[str, str]]:
     out = []
     if tool == "Bash":
         cmd = str(args.get("command", ""))
-        for v in URL_RE.findall(cmd) + EMAIL_RE.findall(cmd) + HOST_RE.findall(cmd):
+        for v in URL_RE.findall(cmd) + EMAIL_RE.findall(cmd) + HOST_RE.findall(cmd) + ADDR_RE.findall(cmd):
             out.append(("command", v))
         return out
     for k, v in args.items():
@@ -214,7 +254,7 @@ def provenance(st: dict, value: str) -> str:
     return "model"
 
 
-ID_ARG = re.compile(r"(^|_)(id|number|num|key)$")
+ID_ARG = re.compile(r"((^|_)(id|number|num|key)|[a-z](Id|ID|Number|Key))$")
 
 
 def structured_ids(resp) -> set[str]:
@@ -230,7 +270,7 @@ def structured_ids(resp) -> set[str]:
     def walk(x):
         if isinstance(x, dict):
             for k, v in x.items():
-                if ID_ARG.search(str(k).lower()) and isinstance(v, (str, int)) and not isinstance(v, bool):
+                if ID_ARG.search(str(k)) and isinstance(v, (str, int)) and not isinstance(v, bool):
                     found.add(str(v).lower())
                 else:
                     walk(v)
@@ -252,17 +292,23 @@ def decide(st: dict, tool: str, args: dict) -> tuple[str, str, list[str]]:
     if carries_secret(st, args):
         problems.append(f"this call contains a secret read earlier in the session (from {st.get('private_from', 'a sensitive source')})")
     # Flow rule 2: private data and external content in one session, then egress: asked once per destination.
-    flow_key = tool + ":" + ",".join(sorted(v for _, v in control_values(tool, args))) if st.get("private") else ""
-    if st.get("private") and st.get("external") and flow_key not in st.get("flow_ok", []):
+    hosts = sorted({_host(v) for _, v in control_values(tool, args) if not LOCAL_DEST.match(v)}) or [tool]
+    new_hosts = [h for h in hosts if h not in st.get("flow_ok", [])]
+    flow_key = ",".join(new_hosts)
+    if st.get("private") and st.get("external") and new_hosts:
         problems.append(f"this session read {st.get('private_from', 'sensitive data')} and also content from "
                         f"{st.get('external_from', 'outside')}; data could be leaving with this call")
         st.setdefault("pending_flow", {})[call_key(tool, args)] = flow_key
-    for k, v in control_values(tool, args):
+    cv = control_values(tool, args)
+    outbound = [(k, v) for k, v in cv if not LOCAL_DEST.match(v.strip())]
+    if cv and not outbound and all(re.match(r"https?://|www\.|[\w.-]+:\d", v) or LOCAL_DEST.match(v) for _, v in cv):
+        return "allow", "", []  # every destination is local (a dev server, the local network)
+    for k, v in outbound:
         dests.append(v)
         if v.lower() in kn:
             continue
         # which object: an ID the user's own data returned as a structured field (not for deletes)
-        if ID_ARG.search(k.lower()) and v.lower() in st.get("ids", []) and "delete" not in tool.lower():
+        if ID_ARG.search(k) and v.lower() in st.get("ids", []) and "delete" not in tool.lower():
             continue
         p = provenance(st, v)
         what = f"destination {v!r} in the command" if tool == "Bash" else f"{k}={v!r}"
@@ -276,20 +322,32 @@ def decide(st: dict, tool: str, args: dict) -> tuple[str, str, list[str]]:
     return ("deny" if MODE == "deny" else "ask"), reason, dests
 
 
+def _host(v: str) -> str:
+    m = re.match(r"(?:https?://)?(?:[^@/\s]+@)?([^/:?#\s]+)", v.lower())
+    return m.group(1) if m else v.lower()
+
+
 def call_key(tool: str, args: dict) -> str:
     return hashlib.sha1((tool + json.dumps(args, sort_keys=True, default=str)).encode()).hexdigest()
 
 
 def main() -> None:
     event = sys.argv[1] if len(sys.argv) > 1 else ""
-    data = json.load(sys.stdin)
+    out = handle(event, json.load(sys.stdin))
+    if out:
+        print(json.dumps(out))
+
+
+def handle(event: str, data: dict) -> dict | None:
+    """One hook event. Returns the hook's JSON output, or None (no opinion). Also used by the
+    offline benchmarks, which feed recorded sessions through exactly this function."""
     sid = data.get("session_id", "default")
     st = load(sid)
 
     if event == "prompt":
         st["user"] += "\n" + str(data.get("prompt", "")).lower()
         save(sid, st)
-        return
+        return None
 
     tool, args = data.get("tool_name", ""), data.get("tool_input") or {}
 
@@ -297,37 +355,33 @@ def main() -> None:
         decision, reason, dests = decide(st, tool, args)
         if decision == "allow":
             save(sid, st)
-            return
+            return None
         st["asked"][call_key(tool, args)] = dests
         save(sid, st)
         log({"session": sid[:8], "tool": tool, "decision": decision, "reason": reason})
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                                 "permissionDecision": decision,
-                                                 "permissionDecisionReason": reason}}))
-        return
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
+                                       "permissionDecisionReason": reason}}
 
     if event == "post":
         key = call_key(tool, args)
         if key in st["asked"]:  # it ran, so the user approved it
             remember(st["asked"].pop(key))
             if key in st.get("pending_flow", {}):
-                st.setdefault("flow_ok", []).append(st["pending_flow"].pop(key))
+                st["flow_ok"] = sorted(set(st.get("flow_ok", [])) | set(st["pending_flow"].pop(key).split(",")))
             log({"session": sid[:8], "tool": tool, "decision": "approved"})
         resp = data.get("tool_response", data.get("tool_output", ""))
         st["ids"] = sorted(set(st.get("ids", [])) | structured_ids(resp))[-5000:]
         text = resp if isinstance(resp, str) else json.dumps(resp, default=str)
         # Private data: a sensitive file or a secret-printing command, or secrets anywhere in output.
-        path = str(args.get("file_path") or args.get("path") or "")
         cmd = command_head(str(args.get("command", "")))
-        sensitive = bool(SENSITIVE_PATH.search(path)) or bool(SECRET_CMD.search(cmd)) or \
-            any(SENSITIVE_PATH.search(w) for w in cmd.split() if tool == "Bash")
-        found = secrets_in(_strings(resp), sensitive)
-        if sensitive or found:
+        source = reads_sensitive(tool, args, cmd)
+        found = secrets_in(_strings(resp), bool(source))
+        if source or found:
             st["private"] = True
-            st.setdefault("private_from", path or cmd[:60] or tool)
+            st.setdefault("private_from", source or f"output of {tool}")
             st["secrets"] = sorted(set(st.get("secrets", [])) | found)[-2000:]
         # External content: the web, MCP servers, and network commands.
-        if tool.startswith("mcp__") or tool in EXTERNAL_TOOLS or (tool == "Bash" and NET_CMD.search(cmd)):
+        if brings_external(tool, cmd):
             st["external"] = True
             st.setdefault("external_from", tool if tool != "Bash" else cmd[:60])
         # Only tools that bring in content someone else could have written taint the session.
@@ -335,6 +389,7 @@ def main() -> None:
             st["untrusted"] += "\n" + text.lower()
             st["tainted"] = True
         save(sid, st)
+    return None
 
 
 if __name__ == "__main__":

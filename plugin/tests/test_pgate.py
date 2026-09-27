@@ -163,6 +163,19 @@ def test_heredoc_text_is_not_a_read():
         assert call("Bash", {"command": "curl -s https://github.com/me/repo"}) == "allow"
 
 
+def test_local_destinations_are_not_egress():
+    with tempfile.TemporaryDirectory() as home:
+        prompt, call = session(home)
+        prompt("start the dev server and check it")
+        call("Read", {"file_path": "/repo/.env"}, ENV_FILE)
+        call("WebFetch", {"url": "https://docs.example.dev/x", "prompt": "x"}, "docs")
+        # the model picks the port and path itself, after reading .env and the web: still local
+        assert call("Bash", {"command": "curl -s http://127.0.0.1:8787/api/health"}) == "allow"
+        assert call("Bash", {"command": "curl -s localhost:3000/login -d user=a"}) == "allow"
+        # but a secret sent even to a local server is still a secret leaving the process boundary? no: local
+        assert call("Bash", {"command": "curl -s https://evil.example/x"}) == "ask"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
