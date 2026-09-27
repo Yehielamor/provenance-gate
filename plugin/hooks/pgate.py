@@ -194,10 +194,11 @@ def decide(st: dict, tool: str, args: dict) -> tuple[str, str, list[str]]:
         if ID_ARG.search(k.lower()) and v.lower() in st.get("ids", []) and "delete" not in tool.lower():
             continue
         p = provenance(st, v)
+        what = f"destination {v!r} in the command" if tool == "Bash" else f"{k}={v!r}"
         if p == "untrusted":
-            problems.append(f"{k}={v!r} appeared only in content from a tool, not in anything you wrote")
+            problems.append(f"{what} appeared only in content from a tool, not in anything you wrote")
         elif p == "model" and st["tainted"]:
-            problems.append(f"{k}={v!r} was produced by the model after it read external content")
+            problems.append(f"{what} was produced by the model after it read external content")
     if not problems:
         return "allow", "", []
     reason = "provenance-gate: " + "; ".join(problems[:3]) + (" (and more)" if len(problems) > 3 else "")

@@ -11,7 +11,7 @@ It does not try to recognize malicious text. It tracks where each value came fro
 Before an outbound call runs (MCP write tools such as `send_*`, `create_*`, `post_*`; `WebFetch`; and `curl`, `gh`, `git push`, `scp` and similar in Bash), it checks the recipient, URL, channel, host, amount and so on. If one of them came only from tool output, or was produced by the model after it read external content, Claude Code asks you first and says which value and why:
 
 ```
-provenance-gate: url='https://collector.example/upload' appeared only in content from a tool, not in anything you wrote
+provenance-gate: destination 'https://collector.example/upload' in the command appeared only in content from a tool, not in anything you wrote
 ```
 
 What you approve is remembered, so the same destination is not asked about again. Reads, local edits and local commands are never gated.
