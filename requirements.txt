@@ -1,0 +1,6 @@
+agentdojo==0.1.35
+# classifier comparison (compare.py)
+torch
+transformers
+sentencepiece
+sacremoses
