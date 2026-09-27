@@ -78,11 +78,14 @@ READ_CMD = re.compile(r"(^|[\s;&|(])(cat|less|more|head|tail|grep|rg|awk|sed|jq|
 LOCAL_MCP = re.compile(r"^mcp__(ccd_[a-z_]+|scheduled-tasks|terminal|visualize|mcp-registry)__")
 
 
-def brings_external(tool: str, cmd: str) -> bool:
+def brings_external(tool: str, cmd: str, args: dict | None = None) -> bool:
     if tool in EXTERNAL_TOOLS:
         return True
     if tool.startswith("mcp__"):
         op = tool.split("__", 2)[-1].lower()
+        url = str((args or {}).get("url") or "")
+        if url and LOCAL_DEST.match(url):  # a browser tool on your own local app
+            return False
         return not LOCAL_MCP.match(tool) and (op.startswith(READ_VERBS) or "page" in op or "navigate" in op)
     if tool == "Bash":  # the output of a web request to somewhere else, not of ssh or a local server
         if not re.search(r"(^|[\s;&|(])(curl|wget|http|httpie)\b", cmd):
@@ -370,7 +373,7 @@ def revalidate(st: dict) -> None:
         st["private"] = False
         st.pop("private_ev", None)
     ev = st.get("external_ev")
-    if st.get("external") and ev and not brings_external(ev["tool"], ev["cmd"]):
+    if st.get("external") and ev and not brings_external(ev["tool"], ev["cmd"], ev.get("args")):
         st["external"] = False
         st.pop("external_ev", None)
     # sessions marked before evidence was recorded: keep only what can still be justified
@@ -452,12 +455,16 @@ def handle(event: str, data: dict) -> dict | None:
                                          "cmd": cmd[:300], "label": label_private(tool, args, source)})
             st["secrets"] = sorted(set(st.get("secrets", [])) | found)[-2000:]
         # External content: the web, MCP servers, and network commands.
-        if brings_external(tool, cmd):
+        if brings_external(tool, cmd, args):
             st["external"] = True
-            st.setdefault("external_ev", {"tool": tool, "cmd": cmd[:300], "label": label_external(tool, args, cmd)})
-        # Only tools that bring in content someone else could have written taint the session.
+            st.setdefault("external_ev", {"tool": tool, "cmd": cmd[:300], "args": {k: args[k] for k in ("url",) if k in args},
+                                          "label": label_external(tool, args, cmd)})
+        # Any tool output is "not from the user": a value copied from it is untrusted (a planted
+        # address in a local file is still caught). But only content from outside the machine makes
+        # values the model *produced itself* suspect; `ls` or `pytest` output does not.
         if tool.startswith("mcp__") or tool in ("WebFetch", "WebSearch", "Bash", "Read", "Grep"):
             st["untrusted"] += "\n" + text.lower()
+        if brings_external(tool, cmd, args):
             st["tainted"] = True
         save(sid, st)
     return None

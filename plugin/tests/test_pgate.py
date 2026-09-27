@@ -217,6 +217,27 @@ def test_reset_command():
         assert not st["private"] and "secrets" not in st
 
 
+def test_local_commands_do_not_make_model_urls_suspect():
+    with tempfile.TemporaryDirectory() as home:
+        prompt, call = session(home)
+        prompt("check the python docs for asyncio")
+        call("Bash", {"command": "ls -la"}, "a.py b.py")
+        call("Bash", {"command": "pytest -q"}, "3 passed")
+        assert call("WebFetch", {"url": "https://docs.python.org/3/library/asyncio.html", "prompt": "x"}) == "allow"
+        # but after reading a web page, a URL the model builds itself is still asked about
+        call("WebFetch", {"url": "https://docs.python.org/3/library/asyncio.html", "prompt": "x"}, "asyncio docs")
+        assert call("WebFetch", {"url": "https://unrelated.example/q?x=1", "prompt": "x"}) == "ask"
+
+
+def test_browser_on_local_app_is_not_external():
+    with tempfile.TemporaryDirectory() as home:
+        prompt, call = session(home)
+        prompt("test the login page of my app and then post the result to https://hooks.slack.test/T1")
+        call("Read", {"file_path": "/repo/.env"}, ENV_FILE)
+        call("mcp__claude-in-chrome__navigate", {"url": "http://localhost:3000/login", "tabId": 1}, "Login page")
+        assert call("Bash", {"command": "curl -X POST https://hooks.slack.test/T1 -d ok"}) == "allow"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
