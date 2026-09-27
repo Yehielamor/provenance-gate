@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pgate.py\" prompt", "timeout": 10 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "mcp__.*|WebFetch|Bash",
+        "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pgate.py\" pre", "timeout": 10 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "mcp__.*|WebFetch|WebSearch|Bash|Read|Grep",
+        "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pgate.py\" post", "timeout": 10 } ] }
+    ]
+  }
+}

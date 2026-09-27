@@ -1,0 +1,8 @@
+{
+  "name": "provenance-gate",
+  "version": "0.1.0",
+  "description": "Asks before an agent sends data, money or access somewhere that came from a tool output instead of from you.",
+  "author": { "name": "Yehiel Amor", "email": "Amor5511@gmail.com" },
+  "license": "Apache-2.0",
+  "hooks": "./hooks/hooks.json"
+}

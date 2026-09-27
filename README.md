@@ -4,6 +4,15 @@ A deterministic authorization gateway for AI agents, and the experiments that te
 
 The gateway sits between an agent and its tools. It never reads tool outputs to decide whether they "look malicious". For every side-effect call it asks where each control value came from: the user, untrusted content (email, files, web pages), or the model itself. It allows the call, or stops it for a human with the reason attached ("recipient UK12... came from `bill-december-2023.txt`, not from you, and you have never paid it").
 
+## Use it in Claude Code
+
+The gateway is also a Claude Code plugin: it asks before an outbound call (MCP write tools, `WebFetch`, `curl`/`gh`/`git push`) uses a recipient or URL that came from tool output instead of from you. See [`plugin/README.md`](plugin/README.md).
+
+```bash
+git clone https://github.com/Yehielamor/provenance-gate
+claude --plugin-dir provenance-gate/plugin
+```
+
 ## Results on AgentDojo v1.2.1
 
 Model-free replay of all 97 user tasks and 609 hijacked attack pairs, assuming the model is **always** hijacked:

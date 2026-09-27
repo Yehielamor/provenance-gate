@@ -1,0 +1,11 @@
+{
+  "name": "provenance-gate",
+  "owner": { "name": "Yehiel Amor", "email": "Amor5511@gmail.com" },
+  "plugins": [
+    {
+      "name": "provenance-gate",
+      "source": "./plugin",
+      "description": "Asks before an agent sends data, money or access somewhere that came from a tool output instead of from you."
+    }
+  ]
+}
