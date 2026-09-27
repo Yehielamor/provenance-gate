@@ -16,6 +16,14 @@ provenance-gate: destination 'https://collector.example/upload' in the command a
 
 What you approve is remembered, so the same destination is not asked about again. Reads, local edits and local commands are never gated.
 
+### Secrets
+
+Two more rules watch for data leaving, not just where it goes:
+
+- **A secret inside an outbound call is always put to you.** When the agent reads a sensitive file (`.env`, `~/.ssh/*`, `*.pem`, `.aws/credentials`, `.npmrc`, ...), runs a command that prints secrets (`printenv`, `gh auth token`, ...), or any output contains a recognizable key (AWS, GitHub, Slack, Stripe, OpenAI-style, private-key blocks), the gate keeps a fingerprint of each secret (a hash, never the value). If one of them appears in an outbound call, you are asked, even when you chose the destination.
+- **Private data plus external content, then egress, is put to you once per destination.** If one session has read a sensitive source and also content from outside (a web page, an MCP server, a network command), the next outbound call to each destination asks first. Approve it and that destination is not asked again in the session.
+
+
 ## Install
 
 ```bash
@@ -39,7 +47,8 @@ Requires `python3` (standard library only).
 ## Limits
 
 - Provenance is traced by matching values against text, with token boundaries. Short or common values can collide.
-- It checks where control values came from, not what content is sent. A leak of private data to a destination you chose (the GitHub MCP pattern) needs an information-flow rule that is not in this version.
+- Secrets are matched by exact value. An agent that encodes, splits or paraphrases a secret before sending it gets past the secret rule; the private-plus-external rule still asks in that session.
+- Destinations that are not written in the call itself (a configured `git remote`, an environment variable) are not seen.
 - The agent can write files, including this plugin's state, through its own tools. Treat `known.json` as a convenience, not a security boundary, until state is kept out of the agent's reach.
 - Measured on AgentDojo only so far (see [`../posts/01-provenance-vs-detection.en.md`](../posts/01-provenance-vs-detection.en.md)). Real-world friction is not yet measured; `decisions.jsonl` is how we will measure it.
 

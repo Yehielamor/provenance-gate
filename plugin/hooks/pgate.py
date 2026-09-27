@@ -54,6 +54,66 @@ HOST_RE = re.compile(r"(?<![\w.-])(?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|ai|app|
                      r"ru|cn|top|link|click)(?![\w-])", re.I)
 
 
+# --- secrets (the flow rule) ------------------------------------------------------
+
+SENSITIVE_PATH = re.compile(r"(^|/)(\.env(\.[\w.-]+)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|"
+                            r"id_(rsa|ed25519|ecdsa|dsa)[^/]*|[^/]*\.(pem|key|p12|pfx|jks|keystore)|"
+                            r"credentials(\.json)?|secrets?(\.\w+)?|service[-_]account[^/]*\.json|kubeconfig)$|"
+                            r"(^|/)\.(ssh|aws|gnupg|kube|docker)/", re.I)
+SECRET_CMD = re.compile(r"(^|[\s;&|(])(printenv|env|set|security\s+find-\w+-password|gh\s+auth\s+token|"
+                        r"aws\s+configure\s+get|gcloud\s+auth\s+print-\w+-token|op\s+read|vault\s+(kv\s+)?get)\b")
+SECRET_VALUE = re.compile(
+    r"(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{30,}|xox[abposr]-[\w-]{10,}|"
+    r"sk-[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{30,}|hf_[A-Za-z0-9]{30,}|"
+    r"glpat-[\w-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
+# KEY=value / "key": "value" lines in sensitive files: the value is the secret
+ASSIGN = re.compile(r"""(?im)^\s*(?:export\s+)?[\w.-]*(?:key|token|secret|pass(?:word)?|pwd|auth|credential)[\w.-]*\s*[:=]\s*["']?([^\s"'#]{8,})""")
+TOKEN = re.compile(r"[A-Za-z0-9_\-+/=.]{8,}")
+EXTERNAL_TOOLS = ("WebFetch", "WebSearch")
+
+
+def _strings(x) -> str:
+    """All string values inside a tool response, joined with newlines (so line-based patterns work
+    on file contents that arrive JSON-escaped)."""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, dict):
+        return "\n".join(_strings(v) for v in x.values())
+    if isinstance(x, list):
+        return "\n".join(_strings(v) for v in x)
+    return ""
+
+
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?:\n|$)", re.S)
+
+
+def command_head(cmd: str) -> str:
+    """The command without heredoc bodies. Used only to decide whether a command *read* something
+    sensitive or external: text the agent writes into a heredoc (code, docs) is neither. Gating an
+    outbound call still looks at the whole command."""
+    return HEREDOC.sub("<<heredoc\n", cmd)
+
+
+def _fp(v: str) -> str:
+    return hashlib.sha256(v.encode()).hexdigest()[:20]
+
+
+def secrets_in(text: str, sensitive_source: bool) -> set[str]:
+    vals = {m.group(0) for m in SECRET_VALUE.finditer(text)}
+    if sensitive_source:
+        vals |= {m.group(1) for m in ASSIGN.finditer(text)}
+    return {_fp(v) for v in vals if len(v) >= 8}
+
+
+def carries_secret(st: dict, args: dict) -> bool:
+    fps = set(st.get("secrets", []))
+    if not fps:
+        return False
+    blob = json.dumps(args, default=str)
+    return any(_fp(t) in fps for t in TOKEN.findall(blob)) or any(
+        _fp(m.group(0)) in fps for m in SECRET_VALUE.finditer(blob))
+
+
 def gated(tool: str, args: dict) -> bool:
     if tool in ("WebFetch",):
         return True
@@ -114,7 +174,8 @@ def load(sid: str) -> dict:
     try:
         return json.loads(p.read_text())
     except (OSError, ValueError):
-        return {"user": "", "untrusted": "", "tainted": False, "asked": {}, "ids": []}
+        return {"user": "", "untrusted": "", "tainted": False, "asked": {}, "ids": [],
+                "private": False, "external": False, "secrets": [], "flow_ok": [], "pending_flow": {}}
 
 
 def save(sid: str, st: dict) -> None:
@@ -186,6 +247,16 @@ def decide(st: dict, tool: str, args: dict) -> tuple[str, str, list[str]]:
         return "allow", "", []
     kn = known()
     problems, dests = [], []
+    # Flow rule 1: a secret this session read is inside what is about to leave. Always asked,
+    # whoever chose the destination.
+    if carries_secret(st, args):
+        problems.append(f"this call contains a secret read earlier in the session (from {st.get('private_from', 'a sensitive source')})")
+    # Flow rule 2: private data and external content in one session, then egress: asked once per destination.
+    flow_key = tool + ":" + ",".join(sorted(v for _, v in control_values(tool, args))) if st.get("private") else ""
+    if st.get("private") and st.get("external") and flow_key not in st.get("flow_ok", []):
+        problems.append(f"this session read {st.get('private_from', 'sensitive data')} and also content from "
+                        f"{st.get('external_from', 'outside')}; data could be leaving with this call")
+        st.setdefault("pending_flow", {})[call_key(tool, args)] = flow_key
     for k, v in control_values(tool, args):
         dests.append(v)
         if v.lower() in kn:
@@ -225,6 +296,7 @@ def main() -> None:
     if event == "pre":
         decision, reason, dests = decide(st, tool, args)
         if decision == "allow":
+            save(sid, st)
             return
         st["asked"][call_key(tool, args)] = dests
         save(sid, st)
@@ -238,10 +310,26 @@ def main() -> None:
         key = call_key(tool, args)
         if key in st["asked"]:  # it ran, so the user approved it
             remember(st["asked"].pop(key))
+            if key in st.get("pending_flow", {}):
+                st.setdefault("flow_ok", []).append(st["pending_flow"].pop(key))
             log({"session": sid[:8], "tool": tool, "decision": "approved"})
         resp = data.get("tool_response", data.get("tool_output", ""))
         st["ids"] = sorted(set(st.get("ids", [])) | structured_ids(resp))[-5000:]
         text = resp if isinstance(resp, str) else json.dumps(resp, default=str)
+        # Private data: a sensitive file or a secret-printing command, or secrets anywhere in output.
+        path = str(args.get("file_path") or args.get("path") or "")
+        cmd = command_head(str(args.get("command", "")))
+        sensitive = bool(SENSITIVE_PATH.search(path)) or bool(SECRET_CMD.search(cmd)) or \
+            any(SENSITIVE_PATH.search(w) for w in cmd.split() if tool == "Bash")
+        found = secrets_in(_strings(resp), sensitive)
+        if sensitive or found:
+            st["private"] = True
+            st.setdefault("private_from", path or cmd[:60] or tool)
+            st["secrets"] = sorted(set(st.get("secrets", [])) | found)[-2000:]
+        # External content: the web, MCP servers, and network commands.
+        if tool.startswith("mcp__") or tool in EXTERNAL_TOOLS or (tool == "Bash" and NET_CMD.search(cmd)):
+            st["external"] = True
+            st.setdefault("external_from", tool if tool != "Bash" else cmd[:60])
         # Only tools that bring in content someone else could have written taint the session.
         if tool.startswith("mcp__") or tool in ("WebFetch", "WebSearch", "Bash", "Read", "Grep"):
             st["untrusted"] += "\n" + text.lower()
