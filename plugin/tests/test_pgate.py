@@ -176,6 +176,47 @@ def test_local_destinations_are_not_egress():
         assert call("Bash", {"command": "curl -s https://evil.example/x"}) == "ask"
 
 
+def reason_of(home, sid, tool, args):
+    r = subprocess.run([sys.executable, str(HOOK), "pre"], input=json.dumps(
+        {"session_id": sid, "tool_name": tool, "tool_input": args}), capture_output=True, text=True,
+        env={**os.environ, "PGATE_HOME": home})
+    return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"] if r.stdout.strip() else ""
+
+
+def test_reasons_name_the_file_and_the_site():
+    with tempfile.TemporaryDirectory() as home:
+        prompt, call = session(home)
+        prompt("read the setup docs and post a note to https://hooks.slack.test/T1")
+        call("Read", {"file_path": "/repo/.env"}, ENV_FILE)
+        call("WebFetch", {"url": "https://docs.example.dev/setup", "prompt": "x"}, "docs")
+        r = reason_of(home, "s1", "Bash", {"command": "curl -X POST https://hooks.slack.test/T1 -d hi"})
+        assert "the file .env" in r and "the site docs.example.dev" in r and "hooks.slack.test" in r, r
+
+
+def test_stale_flags_are_dropped_when_rules_change():
+    with tempfile.TemporaryDirectory() as home:
+        prompt, call = session(home)
+        prompt("push to https://github.com/me/repo")
+        # a session marked under an older, buggier rule: flags without evidence
+        p = next(Path(home, "sessions").glob("*.json"))
+        st = json.loads(p.read_text())
+        st.update(private=True, external=True, private_from="python3 - <<'EOF'", external_from="python3 - <<'EOF'")
+        p.write_text(json.dumps(st))
+        assert call("Bash", {"command": "curl -s https://github.com/me/repo"}) == "allow"
+
+
+def test_reset_command():
+    with tempfile.TemporaryDirectory() as home:
+        prompt, call = session(home)
+        prompt("x")
+        call("Read", {"file_path": "/repo/.env"}, ENV_FILE)
+        r = subprocess.run([sys.executable, str(HOOK), "reset"], capture_output=True, text=True,
+                           env={**os.environ, "PGATE_HOME": home})
+        assert "cleared flow flags in 1" in r.stdout, r.stdout
+        st = json.loads(next(Path(home, "sessions").glob("*.json")).read_text())
+        assert not st["private"] and "secrets" not in st
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

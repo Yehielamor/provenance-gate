@@ -218,6 +218,12 @@ def load(sid: str) -> dict:
                 "private": False, "external": False, "secrets": [], "flow_ok": [], "pending_flow": {}}
 
 
+def load_checked(sid: str) -> dict:
+    st = load(sid)
+    revalidate(st)
+    return st
+
+
 def save(sid: str, st: dict) -> None:
     p = _session_path(sid)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -290,14 +296,16 @@ def decide(st: dict, tool: str, args: dict) -> tuple[str, str, list[str]]:
     # Flow rule 1: a secret this session read is inside what is about to leave. Always asked,
     # whoever chose the destination.
     if carries_secret(st, args):
-        problems.append(f"this call contains a secret read earlier in the session (from {st.get('private_from', 'a sensitive source')})")
+        src = st.get("private_ev", {}).get("label", "a sensitive source")
+        problems.append(f"this call contains a secret that came from {src}")
     # Flow rule 2: private data and external content in one session, then egress: asked once per destination.
     hosts = sorted({_host(v) for _, v in control_values(tool, args) if not LOCAL_DEST.match(v)}) or [tool]
     new_hosts = [h for h in hosts if h not in st.get("flow_ok", [])]
     flow_key = ",".join(new_hosts)
     if st.get("private") and st.get("external") and new_hosts:
-        problems.append(f"this session read {st.get('private_from', 'sensitive data')} and also content from "
-                        f"{st.get('external_from', 'outside')}; data could be leaving with this call")
+        problems.append(f"this session read {st.get('private_ev', {}).get('label', 'sensitive data')} and also "
+                        f"{st.get('external_ev', {}).get('label', 'external content')}; "
+                        f"data could leave with this call to {', '.join(new_hosts)}")
         st.setdefault("pending_flow", {})[call_key(tool, args)] = flow_key
     cv = control_values(tool, args)
     outbound = [(k, v) for k, v in cv if not LOCAL_DEST.match(v.strip())]
@@ -327,12 +335,74 @@ def _host(v: str) -> str:
     return m.group(1) if m else v.lower()
 
 
+def label_private(tool: str, args: dict, source: str) -> str:
+    path = str(args.get("file_path") or args.get("path") or "")
+    if path:
+        return f"the file {Path(path).name}"
+    if source and tool == "Bash":
+        m = SECRET_CMD.search(source)
+        if m:
+            return f"the output of `{m.group(2).strip()}`"
+        return f"the file {Path(source).name}" if "/" in source or source.startswith(".") else "a sensitive file"
+    return {"WebFetch": "a web page", "Bash": "a command's output"}.get(tool, f"the output of {tool.split('__')[-1]}") + \
+        " that contained a key or token"
+
+
+def label_external(tool: str, args: dict, cmd: str) -> str:
+    if tool == "WebSearch":
+        return "a web search"
+    url = str(args.get("url") or "")
+    if not url and tool == "Bash":
+        urls = URL_RE.findall(cmd) + HOST_RE.findall(cmd)
+        url = next((u for u in urls if not LOCAL_DEST.match(u)), "")
+    if url:
+        return f"the site {_host(url)}"
+    if tool.startswith("mcp__"):
+        return f"the {tool.split('__')[1]} connector"
+    return "external content"
+
+
+def revalidate(st: dict) -> None:
+    """Drop flow flags whose recorded evidence no longer qualifies under the current rules (a rule
+    was fixed since the session was marked). Secrets actually seen are never dropped."""
+    ev = st.get("private_ev")
+    if st.get("private") and ev and not st.get("secrets") and not reads_sensitive(ev["tool"], ev["args"], ev["cmd"]):
+        st["private"] = False
+        st.pop("private_ev", None)
+    ev = st.get("external_ev")
+    if st.get("external") and ev and not brings_external(ev["tool"], ev["cmd"]):
+        st["external"] = False
+        st.pop("external_ev", None)
+    # sessions marked before evidence was recorded: keep only what can still be justified
+    if st.get("private") and not st.get("private_ev") and not st.get("secrets"):
+        st["private"] = False
+    if st.get("external") and not st.get("external_ev"):
+        st["external"] = False
+
+
+def reset_all() -> int:
+    """`pgate.py reset`: clear the flow flags (not approvals, not the prompt history) of every session."""
+    n = 0
+    for p in (HOME / "sessions").glob("*.json"):
+        st = json.loads(p.read_text())
+        for k in ("private", "external"):
+            st[k] = False
+        for k in ("private_ev", "external_ev", "private_from", "external_from", "secrets"):
+            st.pop(k, None)
+        p.write_text(json.dumps(st))
+        n += 1
+    return n
+
+
 def call_key(tool: str, args: dict) -> str:
     return hashlib.sha1((tool + json.dumps(args, sort_keys=True, default=str)).encode()).hexdigest()
 
 
 def main() -> None:
     event = sys.argv[1] if len(sys.argv) > 1 else ""
+    if event == "reset":
+        print(f"provenance-gate: cleared flow flags in {reset_all()} session(s)")
+        return
     out = handle(event, json.load(sys.stdin))
     if out:
         print(json.dumps(out))
@@ -342,7 +412,7 @@ def handle(event: str, data: dict) -> dict | None:
     """One hook event. Returns the hook's JSON output, or None (no opinion). Also used by the
     offline benchmarks, which feed recorded sessions through exactly this function."""
     sid = data.get("session_id", "default")
-    st = load(sid)
+    st = load_checked(sid)
 
     if event == "prompt":
         st["user"] += "\n" + str(data.get("prompt", "")).lower()
@@ -378,12 +448,13 @@ def handle(event: str, data: dict) -> dict | None:
         found = secrets_in(_strings(resp), bool(source))
         if source or found:
             st["private"] = True
-            st.setdefault("private_from", source or f"output of {tool}")
+            st.setdefault("private_ev", {"tool": tool, "args": {k: args[k] for k in ("file_path", "path") if k in args},
+                                         "cmd": cmd[:300], "label": label_private(tool, args, source)})
             st["secrets"] = sorted(set(st.get("secrets", [])) | found)[-2000:]
         # External content: the web, MCP servers, and network commands.
         if brings_external(tool, cmd):
             st["external"] = True
-            st.setdefault("external_from", tool if tool != "Bash" else cmd[:60])
+            st.setdefault("external_ev", {"tool": tool, "cmd": cmd[:300], "label": label_external(tool, args, cmd)})
         # Only tools that bring in content someone else could have written taint the session.
         if tool.startswith("mcp__") or tool in ("WebFetch", "WebSearch", "Bash", "Read", "Grep"):
             st["untrusted"] += "\n" + text.lower()
