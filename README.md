@@ -53,3 +53,7 @@ PYTHONPATH=poc .venv/bin/python poc/e2e.py --base-url http://localhost:11434/v1 
 ## Limitations
 
 Model-free replay is a perfect agent; real agents take extra steps and add friction. Stop rates are conditional on hijack. Provenance is traced by string matching; a product needs typed IDs or labels. AgentDojo is small and synthetic. See the write-up for the full list.
+
+## License and contact
+
+Apache-2.0 (see `LICENSE`). Yehiel Amor, Amor5511@gmail.com.

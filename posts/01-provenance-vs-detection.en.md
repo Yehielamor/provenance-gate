@@ -1,17 +1,6 @@
-<!--
-DRAFT: not for publication until reviewed.
-Chart idea: a "security vs. friction" scatter plot, one point per policy and one per classifier.
-  x-axis = % of legitimate tasks needing human approval (lower is better)
-  y-axis = % of hijacked attacks stopped under the hardest encoding for that defense (higher is better)
-  The gateway path (56.7% -> 45.4% -> 34.0% -> 28.9% at ~99%) moves left along the top edge;
-  protectai sits at 72% friction, Prompt Guard 2 at 0% friction / 0% under disguise.
-  No point is in the top-left corner (<10% friction, >95% stopped). That empty corner is the point of the post.
-Interactive version: the "provenance gate" artifact. Data: /poc/results.md, /poc/compare*.md, /poc/poison.md.
--->
-
 # Provenance, not detection: a deterministic tool gateway vs. three injection classifiers on AgentDojo
 
-*[LAB NAME] Research Note #1 · Draft*
+*Yehiel Amor · Research note #1 · September 2026*
 
 ## TL;DR
 
@@ -138,7 +127,7 @@ These numbers come from end-to-end runs with real, mostly older models (gpt-4o, 
 - **Encodings** (classifier comparison): the whole injection base64-encoded; encoded in Unicode tag characters after an emoji; translated to German with a local MarianMT model. AgentDojo's YAML formatter escapes non-ASCII characters, which would make "invisible" characters visible, so this comparison passes raw Unicode to every defense, as real tool channels do.
 - **Classifiers:** run on every tool output, 512-token windows with overlap, threshold 0.5, whole output and per record.
 - **Exclusions:** 9 injection tasks with no reference solution in AgentDojo.
-- **Code:** replay, gateway, classifier comparison, adversary tests and end-to-end harness: **[LINK — TBD]**. The replay runs in 4 to 10 minutes on a CPU.
+- **Code:** replay, gateway, classifier comparison, adversary tests and end-to-end harness: [https://github.com/Yehielamor/provenance-gate](https://github.com/Yehielamor/provenance-gate). The replay runs in 4 to 10 minutes on a CPU.
 
 ## Limitations
 
@@ -153,4 +142,4 @@ These numbers come from end-to-end runs with real, mostly older models (gpt-4o, 
 
 On AgentDojo, a gateway that never reads the injected text bounded the damage of a hijacked agent, and did not care how the injection was encoded. Classifiers either stopped most legitimate work or missed most disguised attacks. Neither the gateway nor the classifiers reach the corner that matters (under 10% friction, above 95% stopped). The gateway's remaining friction lands where a human genuinely has to decide, and its main dependency is a counterparty graph the attacker cannot write to. The attacks it cannot see move data through content, which is where the next layer has to go.
 
-*Feedback and replication attempts welcome: [CONTACT — TBD].*
+*Feedback and replication attempts welcome: Yehiel Amor, Amor5511@gmail.com.*
