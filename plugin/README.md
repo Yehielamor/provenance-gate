@@ -31,7 +31,6 @@ git clone https://github.com/Yehielamor/provenance-gate
 claude --plugin-dir provenance-gate/plugin
 ```
 
-Or, in Claude Code: `/plugin marketplace add Yehielamor/provenance-gate`, then `/plugin install provenance-gate@provenance-gate`.
 
 Requires `python3` (standard library only).
 
