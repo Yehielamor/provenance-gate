@@ -8,7 +8,7 @@ It does not try to recognize malicious text. It tracks where each value came fro
 - **tool output**: issues, emails, web pages, files, command output (anyone could have written them);
 - **the model**: values that appear in neither, produced after the agent read external content.
 
-Before an outbound call runs (MCP write tools such as `send_*`, `create_*`, `post_*`; `WebFetch`; and `curl`, `gh`, `git push`, `scp` and similar in Bash), it checks the recipient, URL, channel, host, amount and so on. If one of them came only from tool output, or was produced by the model after it read external content, Claude Code asks you first and says which value and why:
+Before an outbound call runs (any MCP tool that is not clearly a read; `WebFetch`; and in Bash: `curl`, `gh`, `git push` (the remote's URL is resolved from the repo), `scp`, `ssh`, `python -c` / `node -e` one-liners and `git remote set-url`), it checks the recipient, URL, channel, host, amount and so on. If one of them came only from tool output, or was produced by the model after it read external content, Claude Code asks you first and says which value and why:
 
 ```
 provenance-gate: destination 'https://collector.example/upload' in the command appeared only in content from a tool, not in anything you wrote
@@ -35,6 +35,12 @@ Or, in Claude Code: `/plugin marketplace add Yehielamor/provenance-gate`, then `
 
 Requires `python3` (standard library only).
 
+## State and privacy
+
+State lives in `PGATE_HOME` (files are created readable by you only). Tool output is kept per session to trace where values came from, with secrets replaced by `[secret]`; secrets themselves are kept only as hashes. Sessions untouched for 14 days are deleted and the decision log is rotated at 5 MB. `python3 plugin/hooks/pgate.py reset` clears the "sensitive + external" flags of all sessions (approvals are kept).
+
+The gate fails closed: if it cannot check a call (an internal error, or a call over 200,000 characters) it asks. Concurrent hook processes are serialized with a file lock.
+
 ## Settings
 
 | Variable | Default | Effect |
@@ -46,6 +52,8 @@ Requires `python3` (standard library only).
 
 ## Limits
 
+- A destination the model invents before the session has read any external content is not asked about: nothing untrusted could have chosen it yet.
+
 - Provenance is traced by matching values against text, with token boundaries. Short or common values can collide.
 - Secrets are matched by exact value. An agent that encodes, splits or paraphrases a secret before sending it gets past the secret rule; the private-plus-external rule still asks in that session.
 - Destinations that are not written in the call itself (a configured `git remote`, an environment variable) are not seen.
@@ -55,5 +63,7 @@ Requires `python3` (standard library only).
 ## Tests
 
 ```bash
-python3 plugin/tests/test_pgate.py
+python3 plugin/tests/test_pgate.py     # scenarios
+python3 plugin/tests/redteam_cases.py  # bypass attempts found by a red-team pass, all caught except one documented case
+python3 bench/replay_history.py        # friction on your own Claude Code history (local only, counts only)
 ```
