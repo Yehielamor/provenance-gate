@@ -32,7 +32,7 @@ What else we measured:
 - **Real incidents:** EchoLeak, GitHub MCP, Supabase MCP and ForcedLeak, analyzed structurally ([`poc/incidents_analysis.md`](poc/incidents_analysis.md)). Control-value provenance alone stops none of them, because the data leaves through content or rendered output.
 - **End to end:** [`poc/e2e.py`](poc/e2e.py) runs a live model with the gateway in AgentDojo's tool loop. A dry run reproduces the replay exactly; a five-pair pilot with Nemotron-3-Ultra is in [`poc/e2e/`](poc/e2e/).
 
-Write-up: [`posts/01-provenance-vs-detection.en.md`](posts/01-provenance-vs-detection.en.md). Full lab notes: [`poc/README.md`](poc/README.md).
+Write-ups: [#1 the benchmark](posts/01-provenance-vs-detection.en.md) · [#2 real sessions and a red team](posts/02-real-sessions.en.md). Full lab notes: [`poc/README.md`](poc/README.md).
 
 ## Run it
 
